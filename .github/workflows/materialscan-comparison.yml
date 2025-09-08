@@ -63,8 +63,10 @@ jobs:
           pip install histcmp==0.8.1
           export PYTHONPATH=$VIRTUAL_ENV/lib/python3.$(python3 -c 'import sys; print(f"{sys.version_info[1]}")')/site-packages:$PYTHONPATH
           
-          # Make scripts executable
+          # Make scripts executable and fix git configuration
           chmod +x CI/generate_material_scans.sh
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$PWD"
           
           # Determine which geometries to scan based on trigger type
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -75,30 +77,50 @@ jobs:
             HEAD_SHA="${{ github.event.pull_request.head.sha }}"
             
             echo "Comparing changes from $BASE_SHA to $HEAD_SHA"
+            echo "Current working directory: $PWD"
+            echo "Git repository status:"
+            git status --porcelain || echo "Git status failed"
+            
+            # Ensure we have the base branch for comparison
+            echo "Fetching base branch for comparison..."
+            git fetch origin ${{ github.event.pull_request.base.ref }}:refs/remotes/origin/${{ github.event.pull_request.base.ref }} --depth=50 || {
+              echo "Failed to fetch base branch, trying alternative method..."
+              git fetch origin ${{ github.event.pull_request.base.ref }} --depth=50
+            }
             
             # Get all changed files
-            git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
-            CHANGED_FILES=$(git diff --name-only $BASE_SHA..$HEAD_SHA)
+            echo "Getting changed files..."
+            CHANGED_FILES=$(git diff --name-only $BASE_SHA..$HEAD_SHA 2>/dev/null || {
+              echo "Direct SHA diff failed, trying alternative..."
+              git diff --name-only origin/${{ github.event.pull_request.base.ref }}..HEAD
+            })
             
             echo "=== Changed files in this PR ==="
             echo "$CHANGED_FILES"
             
-            # Extract changed geometries
+            # Extract changed geometries with better error handling
             CHANGED_GEOMETRIES=""
-            while IFS= read -r file; do
-              # Match pattern: FCCee/{detector}/compact/{version}/...
-              if [[ "$file" =~ ^FCCee/([^/]+)/compact/([^/]+)/ ]]; then
-                DETECTOR="${BASH_REMATCH[1]}"
-                VERSION="${BASH_REMATCH[2]}"
-                GEOMETRY_PATH="$DETECTOR/$VERSION"
+            if [ -n "$CHANGED_FILES" ]; then
+              while IFS= read -r file; do
+                # Skip empty lines
+                [ -z "$file" ] && continue
                 
-                # Add to list if not already present
-                if [[ ! "$CHANGED_GEOMETRIES" =~ $GEOMETRY_PATH ]]; then
-                  CHANGED_GEOMETRIES="$CHANGED_GEOMETRIES$GEOMETRY_PATH"$'\n'
-                  echo "  → Detected changed geometry: $GEOMETRY_PATH"
+                # Match pattern: FCCee/{detector}/compact/{version}/...
+                if [[ "$file" =~ ^FCCee/([^/]+)/compact/([^/]+)/ ]]; then
+                  DETECTOR="${BASH_REMATCH[1]}"
+                  VERSION="${BASH_REMATCH[2]}"
+                  GEOMETRY_PATH="$DETECTOR/$VERSION"
+                  
+                  # Add to list if not already present
+                  if [[ ! "$CHANGED_GEOMETRIES" =~ $GEOMETRY_PATH ]]; then
+                    CHANGED_GEOMETRIES="$CHANGED_GEOMETRIES$GEOMETRY_PATH"$'\n'
+                    echo "  → Detected changed geometry: $GEOMETRY_PATH"
+                  fi
                 fi
-              fi
-            done <<< "$CHANGED_FILES"
+              done <<< "$CHANGED_FILES"
+            else
+              echo "No changed files detected"
+            fi
             
             # Remove empty lines and create config
             CHANGED_GEOMETRIES=$(echo "$CHANGED_GEOMETRIES" | grep -v '^$' | sort -u)
@@ -113,7 +135,8 @@ jobs:
               done
               
               GEOMETRY_CONFIG="/tmp/pr_geometries.yml"
-              echo "✅ Will scan $(echo "$CHANGED_GEOMETRIES" | wc -l) changed geometries"
+              GEOMETRY_COUNT=$(echo "$CHANGED_GEOMETRIES" | wc -l)
+              echo "✅ Will scan $GEOMETRY_COUNT changed geometries"
             else
               echo "🎯 No geometry changes detected - creating minimal config"
               echo "geometries: []" > /tmp/pr_geometries.yml

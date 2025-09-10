@@ -172,11 +172,6 @@ process_geometries() {
   # Process each geometry from the config list
   for geometry_path in "${geometry_list[@]}"; do
     
-    # Skip comments or empty lines
-    if [[ "$geometry_path" =~ ^#.* ]] || [ -z "$geometry_path" ]; then
-        continue
-    fi
-    
     # Parse geometry path (format: GEOMETRY/COMPACT_NAME)
     local geometry_name=$(dirname "$geometry_path")
     local compact_name=$(basename "$geometry_path")
